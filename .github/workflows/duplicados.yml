@@ -1,0 +1,39 @@
+# Detector de codigo copiado (jscpd), estandar de la org.
+#
+# Copia este fichero tal cual a `.github/workflows/duplicados.yml` de tu repo.
+# No necesita secretos: todo corre en local (jscpd sobre el arbol, git sobre
+# el diff), asi que tampoco `secrets` que repartir.
+#
+# La implementacion vive en el repo del framework, no aqui:
+#   pocharlies-org/k8s-gitops-pocharlies
+#     .github/workflows/reusable-duplicados.yml  <- orquestacion
+#     scripts/duplicados.py                      <- detector
+#
+# El check se llama `duplicados / duplicados`: ese nombre es el que exige el
+# guardia de merge. No cambies ni el `name:` de arriba ni la clave del job.
+#
+# Falla SOLO si la PR introduce duplicacion nueva (bloques de >= 12 lineas
+# copiados de algo que ya estaba, o copiado entre ficheros nuevos del propio
+# PR). La duplicacion ya existente en el tronco no cuenta: no es culpa de
+# quien llega ahora. Ajustes por repo con los inputs del reusable
+# (`min_lineas`, `formatos`, `ignorar`) en el bloque `with:`.
+#
+# `workflow_dispatch` escanea el ultimo commit del tronco: es el modo con el
+# que se valida el repo sin abrir un PR de prueba.
+#
+# `pull_request` a proposito, NUNCA `pull_request_target`: el segundo ejecuta
+# con los secretos del repo base sobre codigo de un fork.
+name: duplicados
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  duplicados:
+    uses: pocharlies-org/k8s-gitops-pocharlies/.github/workflows/reusable-duplicados.yml@main
+    secrets: inherit
