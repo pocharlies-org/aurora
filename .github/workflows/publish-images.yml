@@ -34,24 +34,26 @@ jobs:
             dockerfile: ./server/Dockerfile
             platform: linux/amd64
             arch: amd64
-            runner: ubuntu-24.04
+            runner: arc-k8s
           - image: server
             context: ./server
             dockerfile: ./server/Dockerfile
             platform: linux/arm64
             arch: arm64
+            # 2026-10-05 devops · fuera de pool: no existe hardware de esa plataforma en el clúster (skill ci-runners-arc, INFRA-548)
             runner: ubuntu-24.04-arm
           - image: frontend
             context: ./client
             dockerfile: ./client/Dockerfile
             platform: linux/amd64
             arch: amd64
-            runner: ubuntu-24.04
+            runner: arc-k8s
           - image: frontend
             context: ./client
             dockerfile: ./client/Dockerfile
             platform: linux/arm64
             arch: arm64
+            # 2026-10-05 devops · fuera de pool: no existe hardware de esa plataforma en el clúster (skill ci-runners-arc, INFRA-548)
             runner: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
@@ -136,7 +138,7 @@ jobs:
     name: Merge ${{ matrix.image }} manifest
     needs: build
     if: github.repository == 'Arvo-AI/aurora'
-    runs-on: ubuntu-24.04
+    runs-on: arc-k8s
     permissions:
       contents: read
       packages: write
@@ -221,7 +223,7 @@ jobs:
 
   publish-summary:
     name: Publish Summary
-    runs-on: ubuntu-24.04
+    runs-on: arc-k8s
     needs: [build, merge]
     if: always()
     permissions: {}
