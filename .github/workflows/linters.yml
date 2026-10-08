@@ -8,6 +8,8 @@ permissions:
 
 jobs:
   gitleaks:
+    # 2026-10-05 devops · fuera de pool temporal: instala gitleaks en /usr/local/bin sin sudo
+    # (permiso denegado en la imagen del runner); migrar añadiendo sudo (skill ci-runners-arc, INFRA-548)
     runs-on: ubuntu-24.04
     name: gitleaks
     steps:
@@ -27,7 +29,7 @@ jobs:
           gitleaks detect --config .gitleaks.toml --source . --no-git --verbose --exit-code 1
 
   pre-checks:
-    runs-on: ubuntu-24.04
+    runs-on: arc-k8s
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

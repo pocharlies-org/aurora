@@ -33,7 +33,7 @@ permissions:
 jobs:
   validate-env-vars:
     name: Validate Environment Variables
-    runs-on: ubuntu-latest
+    runs-on: arc-k8s
 
     steps:
       - name: Checkout repository

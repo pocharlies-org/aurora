@@ -31,11 +31,12 @@ jobs:
         include:
           - arch: amd64
             platform: linux/amd64
-            runner: ubuntu-24.04
+            runner: arc-k8s
             bucket: gs://aurora-airtight-bucket
             bucket_url: https://storage.googleapis.com/aurora-airtight-bucket
           - arch: arm64
             platform: linux/arm64
+            # 2026-10-05 devops · fuera de pool: no existe hardware de esa plataforma en el clúster (skill ci-runners-arc, INFRA-548)
             runner: ubuntu-24.04-arm
             bucket: gs://aurora-airtight-bucket-arm64
             bucket_url: https://storage.googleapis.com/aurora-airtight-bucket-arm64
@@ -186,7 +187,7 @@ jobs:
 
   publish-summary:
     name: Airtight Summary
-    runs-on: ubuntu-24.04
+    runs-on: arc-k8s
     needs: [airtight]
     if: always()
     permissions: {}
