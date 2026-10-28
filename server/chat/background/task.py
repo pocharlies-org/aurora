@@ -2347,6 +2347,28 @@ def _record_rca_error(cursor, incident_id: str, user_id: str) -> None:
         logger.debug("[Cleanup] Failed to record rca_error for incident %s: %s", incident_id, e)
 
 
+def _record_summary_requeue(cursor, incident_id: str, user_id: str, attempt: int) -> None:
+    """Write a summary_requeued lifecycle event (retry counter + telemetry for
+    the stuck-summarizing sweep), wrapped in a savepoint like _record_rca_error."""
+    try:
+        org_id = get_org_id_for_user(user_id)
+        cursor.execute("SAVEPOINT sp_summary_requeue")
+        cursor.execute(
+            """INSERT INTO incident_lifecycle_events
+               (incident_id, user_id, org_id, event_type, new_value, metadata)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (incident_id, user_id, org_id, 'summary_requeued', 'summarizing',
+             json.dumps({'attempt': attempt}))
+        )
+        cursor.execute("RELEASE SAVEPOINT sp_summary_requeue")
+    except Exception as e:
+        try:
+            cursor.execute("ROLLBACK TO SAVEPOINT sp_summary_requeue")
+        except Exception as rollback_err:
+            logger.debug("[Cleanup] Requeue-event rollback failed for incident %s: %s", incident_id, rollback_err)
+        logger.debug("[Cleanup] Failed to record summary_requeued for incident %s: %s", incident_id, e)
+
+
 def _is_task_dead(task_id: str, last_activity, threshold, cursor=None, incident_id=None) -> bool:
     """Check whether a Celery task is no longer running.
 
@@ -2442,12 +2464,23 @@ def cleanup_orphaned_investigations(threshold_minutes: int = 25) -> int:
 @celery_app.task(name="chat.background.cleanup_stale_sessions")
 def cleanup_stale_background_chats() -> Dict[str, Any]:
     """Cleanup background chat sessions stuck in 'in_progress' and incidents
-    whose Celery task is no longer alive. Runs every 5 minutes.
+    whose Celery task is no longer alive, including incidents stuck in
+    'summarizing' whose summary task was lost (re-enqueued, then marked error
+    after retries). Runs every 5 minutes.
     """
     stale_threshold = datetime.now() - timedelta(minutes=20)
     dead_task_threshold = datetime.now() - timedelta(minutes=3)
     # Per-role timeout caps at 600s; 35 min is safely past any legitimate run.
     findings_threshold = datetime.now() - timedelta(minutes=35)
+    # generate_incident_summary_from_chat has a 180 s hard time limit, so a
+    # 'summarizing' incident past this threshold has no live task behind it.
+    summarizing_threshold = datetime.now() - timedelta(minutes=15)
+    # A lost summary task is re-enqueued at most this many times before the
+    # incident is marked error (matches the task's own max_retries=2).
+    max_summary_requeues = 2
+    # Backlogs (e.g. after a broker incident) drain over several sweeps
+    # instead of flooding the worker and the LLM in one 5-minute pass.
+    summary_requeue_budget = 5
 
     try:
         with db_pool.get_admin_connection() as conn:
@@ -2455,6 +2488,8 @@ def cleanup_stale_background_chats() -> Dict[str, Any]:
             dead_task_count = 0
             orphaned_count = 0
             stale_findings_count = 0
+            summary_requeued_count = 0
+            summary_error_count = 0
 
             with conn.cursor() as cursor:
                 for uid in _affected_users(cursor):
@@ -2586,7 +2621,75 @@ def cleanup_stale_background_chats() -> Dict[str, Any]:
                         stale_findings_count += cursor.rowcount
                         conn.commit()
 
-            # --- 5. Stale action runs (per-org, action_runs is RLS-protected) ---
+                    # --- 5. Stuck summarizing: generate_incident_summary_from_chat
+                    # was consumed from the broker without executing (worker died
+                    # after dequeue). Sections 1-3 cannot see these: the RCA task
+                    # id is cleared before 'summarizing' is set, so there is no
+                    # task id to probe. Past the threshold no legitimate run can
+                    # still be alive (180 s hard time limit), so re-enqueue the
+                    # summary (the task is idempotent: it regenerates the summary
+                    # and flips aurora_status itself). After max_summary_requeues
+                    # lost attempts, mark error so RCA coverage sees a terminal
+                    # state instead of an incident stuck forever. ---
+                    if summary_requeue_budget > 0:
+                        cursor.execute("""
+                            SELECT i.id, i.aurora_chat_session_id FROM incidents i
+                            WHERE i.aurora_status = 'summarizing' AND i.status != 'merged'
+                              AND i.updated_at < %s AND i.user_id = %s
+                            ORDER BY i.updated_at
+                            LIMIT %s
+                        """, (summarizing_threshold, uid, summary_requeue_budget))
+                        stuck_rows = cursor.fetchall()
+                        for inc_id, summary_session_id in stuck_rows:
+                            summary_requeue_budget -= 1
+                            cursor.execute("""
+                                SELECT COUNT(*) FROM incident_lifecycle_events
+                                WHERE incident_id = %s AND event_type = 'summary_requeued'
+                            """, (inc_id,))
+                            prior_requeues = cursor.fetchone()[0]
+                            if summary_session_id is None or prior_requeues >= max_summary_requeues:
+                                # Nothing to summarize from, or the re-enqueues never
+                                # landed: terminal, actionable error like the dead-task branch.
+                                cursor.execute(
+                                    "UPDATE incidents SET aurora_status = 'error', status = 'analyzed', analyzed_at = COALESCE(analyzed_at, NOW()), updated_at = NOW() WHERE id = %s AND aurora_status = 'summarizing' AND status != 'merged' RETURNING id",
+                                    (inc_id,)
+                                )
+                                if cursor.fetchone():
+                                    _record_rca_error(cursor, str(inc_id), uid)
+                                    summary_error_count += 1
+                                    flipped = True
+                                else:
+                                    flipped = False
+                                conn.commit()
+                                if flipped:
+                                    try:
+                                        from utils.notifications.dispatcher import notify_investigation_failed
+                                        notify_investigation_failed(uid, str(inc_id), error_message="Summary could not be generated after retries")
+                                    except Exception:
+                                        logger.exception("[CleanupOrphans] Failed to send summary-failed notification for incident %s", inc_id)
+                                continue
+                            from chat.background.summarization import generate_incident_summary_from_chat
+                            try:
+                                generate_incident_summary_from_chat.delay(
+                                    incident_id=str(inc_id),
+                                    user_id=uid,
+                                    session_id=str(summary_session_id),
+                                )
+                            except Exception:
+                                logger.exception("[BackgroundChat:Cleanup] Failed to re-enqueue summary for incident %s", inc_id)
+                                continue
+                            # Bump updated_at so the next sweep (5 min) does not
+                            # double-enqueue while this attempt runs (the task
+                            # itself does not touch updated_at until it finishes).
+                            cursor.execute(
+                                "UPDATE incidents SET updated_at = NOW() WHERE id = %s AND aurora_status = 'summarizing'",
+                                (inc_id,)
+                            )
+                            _record_summary_requeue(cursor, str(inc_id), uid, prior_requeues + 1)
+                            conn.commit()
+                            summary_requeued_count += 1
+
+            # --- 6. Stale action runs (per-org, action_runs is RLS-protected) ---
             stale_actions_count = 0
             stale_action_threshold = datetime.now() - timedelta(minutes=35)
             with conn.cursor() as cursor:
@@ -2603,10 +2706,10 @@ def cleanup_stale_background_chats() -> Dict[str, Any]:
                 if stale_actions_count > 0:
                     conn.commit()
 
-            if cleaned_count or dead_task_count or orphaned_count or stale_actions_count or stale_findings_count:
-                logger.info("[BackgroundChat:Cleanup] stale=%d dead_tasks=%d orphaned=%d stale_actions=%d stale_findings=%d",
-                            cleaned_count, dead_task_count, orphaned_count, stale_actions_count, stale_findings_count)
-            return {"cleaned": cleaned_count, "dead_tasks": dead_task_count, "orphaned": orphaned_count, "stale_actions": stale_actions_count, "stale_findings": stale_findings_count}
+            if cleaned_count or dead_task_count or orphaned_count or stale_actions_count or stale_findings_count or summary_requeued_count or summary_error_count:
+                logger.info("[BackgroundChat:Cleanup] stale=%d dead_tasks=%d orphaned=%d stale_actions=%d stale_findings=%d summary_requeued=%d summary_errors=%d",
+                            cleaned_count, dead_task_count, orphaned_count, stale_actions_count, stale_findings_count, summary_requeued_count, summary_error_count)
+            return {"cleaned": cleaned_count, "dead_tasks": dead_task_count, "orphaned": orphaned_count, "stale_actions": stale_actions_count, "stale_findings": stale_findings_count, "summary_requeued": summary_requeued_count, "summary_errors": summary_error_count}
 
     except Exception as e:
         logger.exception(f"[BackgroundChat:Cleanup] Failed: {e}")
