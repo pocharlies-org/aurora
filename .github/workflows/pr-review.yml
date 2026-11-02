@@ -37,4 +37,6 @@ jobs:
       # hace falta `contents: write`. No viene puesto a proposito: sin el, ese
       # modo sigue en verde y deja el review en el resumen del job.
     uses: pocharlies-org/k8s-gitops-pocharlies/.github/workflows/reusable-pr-review.yml@main
+    with:
+      engine: pr-agent
     secrets: inherit
