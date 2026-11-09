@@ -16,6 +16,8 @@ concurrency:
 
 jobs:
   build:
+    # INFRA-1218: job del upstream Arvo-AI/aurora; queda skipped en el fork
+    if: github.repository == 'Arvo-AI/aurora'
     runs-on: arc-k8s
     permissions:
       contents: read
@@ -44,7 +46,8 @@ jobs:
           path: website/build
 
   deploy:
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/docs/docusaurus-site'
+    # INFRA-1218: job del upstream Arvo-AI/aurora; queda skipped en el fork
+    if: github.repository == 'Arvo-AI/aurora' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/docs/docusaurus-site')
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
