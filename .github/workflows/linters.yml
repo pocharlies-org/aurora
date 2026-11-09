@@ -8,8 +8,8 @@ permissions:
 
 jobs:
   gitleaks:
-    # 2026-10-05 devops · fuera de pool temporal: instala gitleaks en /usr/local/bin sin sudo
-    # (permiso denegado en la imagen del runner); migrar añadiendo sudo (skill ci-runners-arc, INFRA-548)
+    # INFRA-1218: job del upstream Arvo-AI/aurora; queda skipped en el fork
+    if: github.repository == 'Arvo-AI/aurora'
     runs-on: ubuntu-24.04
     name: gitleaks
     steps:
@@ -29,6 +29,8 @@ jobs:
           gitleaks detect --config .gitleaks.toml --source . --no-git --verbose --exit-code 1
 
   pre-checks:
+    # INFRA-1218: job del upstream Arvo-AI/aurora; queda skipped en el fork
+    if: github.repository == 'Arvo-AI/aurora'
     runs-on: arc-k8s
     steps:
       - name: Checkout repository

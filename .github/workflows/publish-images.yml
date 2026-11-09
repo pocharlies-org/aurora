@@ -225,7 +225,8 @@ jobs:
     name: Publish Summary
     runs-on: arc-k8s
     needs: [build, merge]
-    if: always()
+    # INFRA-1218: job del upstream Arvo-AI/aurora; queda skipped en el fork
+    if: github.repository == 'Arvo-AI/aurora' && always()
     permissions: {}
     steps:
       - name: Summary

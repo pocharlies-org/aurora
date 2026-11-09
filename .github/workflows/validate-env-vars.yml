@@ -32,6 +32,8 @@ permissions:
 
 jobs:
   validate-env-vars:
+    # INFRA-1218: job del upstream Arvo-AI/aurora; queda skipped en el fork
+    if: github.repository == 'Arvo-AI/aurora'
     name: Validate Environment Variables
     runs-on: arc-k8s
 
